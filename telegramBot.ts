@@ -1,10 +1,39 @@
 // Confirm strategy wizard button
+// --- Unified Token List Fetcher ---
+// TODO: Replace with your actual token list fetching logic
+// دالة تجلب العملات من عدة مصادر: tokens.json، mockLiveMarket، tokenUtils
+async function fetchUnifiedTokenList(): Promise<any[]> {
+  // فقط من tokenUtils.ts
+  try {
+    const tokenUtils = await import('./utils/tokenUtils');
+    if (tokenUtils && typeof tokenUtils.fetchDexScreenerTokens === 'function') {
+      const utilTokens = await tokenUtils.fetchDexScreenerTokens();
+      if (Array.isArray(utilTokens)) {
+        // إزالة التكرار حسب العنوان address
+        const seen = new Set();
+        const uniqueTokens = utilTokens.filter(t => {
+          const addr = t.address || t.tokenAddress || t.pairAddress;
+          if (!addr) return false;
+          if (seen.has(addr)) return false;
+          seen.add(addr);
+          return true;
+        });
+        console.log(`[fetchUnifiedTokenList] Total unique tokens: ${uniqueTokens.length}`);
+        return uniqueTokens;
+      }
+    }
+  } catch (e) {
+    console.warn('[fetchUnifiedTokenList] Failed to load tokens from tokenUtils:', e);
+  }
+  return [];
+}
 // --- Sent Tokens Rotating File System ---
 
 import crypto from 'crypto';
 import path from 'path';
 import dotenv from 'dotenv';
 dotenv.config();
+console.log('Loaded FEE_WALLET:', process.env.FEE_WALLET);
 import fs from 'fs';
 import { STRATEGY_FIELDS, buildTokenMessage } from './utils/tokenUtils';
 import fetchDefault from 'node-fetch';
@@ -23,8 +52,13 @@ import { monitorCopiedWallets } from './utils/portfolioCopyMonitor';
 console.log('Loaded TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN);
 
 // Declare users and bot at the top before any usage
+
+if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
+  console.error('❌ TELEGRAM_BOT_TOKEN is missing in environment variables. Bot will not start.');
+  process.exit(1);
+}
 let users: Record<string, any> = loadUsers();
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN!);
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 console.log('🚀 Telegram bot script loaded.');
 
 const SENT_TOKENS_DIR = path.join(__dirname, 'sent_tokens');
@@ -140,13 +174,12 @@ export async function appendSentHash(userId: string, hash: string) {
       return;
     }
     arr.push({ hash, ts: now });
-    // If reached CLEANUP_TRIGGER_COUNT or more, delete oldest CLEANUP_BATCH_SIZE
-    if (arr.length >= CLEANUP_TRIGGER_COUNT) {
-      arr = arr.slice(CLEANUP_BATCH_SIZE);
-    }
-    // If exceeded max, keep only last MAX_HASHES_PER_USER
+    // إذا تجاوز العدد المسموح، احذف الأقدم دائماً
     if (arr.length > MAX_HASHES_PER_USER) {
       arr = arr.slice(arr.length - MAX_HASHES_PER_USER);
+    } else if (arr.length >= CLEANUP_TRIGGER_COUNT) {
+      // إذا وصل للحد، احذف دفعة من الأقدم وليس فقط أول CLEANUP_BATCH_SIZE
+      arr = arr.slice(CLEANUP_BATCH_SIZE);
     }
     // Smart error handling on write
     let retry = 0;
@@ -199,6 +232,13 @@ function getOrRegisterUser(ctx: any): any {
       // Add more default fields as needed
     };
     saveUsers(users);
+    // Reset sent_tokens file for this user
+    const sentFile = getUserSentFile(userId);
+    try {
+      if (fs.existsSync(sentFile)) fs.unlinkSync(sentFile);
+    } catch (e) {
+      console.warn(`[getOrRegisterUser] Failed to reset sent_tokens for user ${userId}:`, e);
+    }
     ctx.reply('👋 Welcome! You are now registered. Here is the main menu:', { parse_mode: 'HTML' });
     sendMainMenu(ctx);
   }
@@ -613,72 +653,6 @@ async function fetchDexScreenerPairs(tokenAddress: string): Promise<any[]> {
   }
 }
 
-// --- Unified token fetch: DexScreener (main), Jupiter (secondary) ---
-async function fetchUnifiedTokenList(): Promise<any[]> {
-  let allTokens: any[] = [];
-  // DexScreener: fetch trending tokens (or from a list, or from user strategies)
-  // For demo, fetch a few known tokens (SOL, USDC, etc.)
-  const trending = [
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    // ...add more trending or user-watched tokens here
-  ];
-  for (const addr of trending) {
-    const pairs = await fetchDexScreenerPairs(addr);
-    allTokens = allTokens.concat(pairs.map((p: any) => ({
-      name: p.baseToken?.name,
-      symbol: p.baseToken?.symbol,
-      address: p.baseToken?.address,
-      priceUsd: p.priceUsd,
-      priceNative: p.priceNative,
-      marketCap: p.marketCap,
-      volume: p.volume?.h24,
-      holders: undefined, // DexScreener does not provide holders
-      age: p.pairCreatedAt,
-      verified: undefined,
-      url: p.url,
-      pairAddress: p.pairAddress,
-      dexId: p.dexId,
-      quoteToken: p.quoteToken,
-      txns: p.txns,
-      liquidity: p.liquidity
-    })));
-  }
-  // Jupiter (optional, as secondary)
-  try {
-    const jupRes = await fetch('https://quote-api.jup.ag/v6/tokens');
-    if (jupRes.ok) {
-      const jupData: unknown = await jupRes.json();
-      if (typeof jupData === 'object' && jupData !== null && 'tokens' in jupData && Array.isArray((jupData as any).tokens)) {
-        allTokens = allTokens.concat((jupData as any).tokens.map((t: any) => ({
-          name: t.name,
-          symbol: t.symbol,
-          address: t.address,
-          priceUsd: t.price,
-          imageUrl: t.logoURI,
-          verified: t.tags?.includes('verified'),
-          description: t.extensions?.description,
-          links: [
-            ...(t.extensions?.website ? [{ label: 'Website', url: t.extensions.website, type: 'website' }] : []),
-            ...(t.extensions?.twitter ? [{ label: 'Twitter', url: t.extensions.twitter, type: 'twitter' }] : []),
-            ...(t.extensions?.discord ? [{ label: 'Discord', url: t.extensions.discord, type: 'discord' }] : []),
-          ],
-        })));
-      }
-    }
-  } catch (e) {
-    console.error('Jupiter fetch error:', e);
-  }
-  // Deduplicate by address
-  const seen = new Set();
-  const deduped = allTokens.filter(t => {
-    const addr = t.address || t.tokenAddress || t.pairAddress;
-    if (!addr || seen.has(addr)) return false;
-    seen.add(addr);
-    return true;
-  });
-  return deduped;
-}
 
 // Define addHoneyToken at top level
 function addHoneyToken(userId: string, tokenData: any, users: any) {
@@ -704,41 +678,68 @@ async function getCachedTokenList() {
 async function autoStrategyMonitorAndTradeWatcher() {
   const gAny = globalThis as any;
   if (!gAny.openTrades) gAny.openTrades = {};
-  for (const userId in users) {
+  // Optimization 1: Fetch tokens in parallel and cache per user
+  const userIds = Object.keys(users);
+  // Fetch cache for each user
+  const tokensCache: Record<string, any[]> = {};
+  await Promise.all(userIds.map(async userId => {
     const user = users[userId];
-    if (!user?.strategy || !user.strategy.enabled || !user.secret) continue;
-    // 1. Auto-buy logic (كما هو سابقًا)
+    if (!user?.strategy || !user.strategy.enabled || !user.secret) return;
+    // Validate strategy correctness
+    if (!user.strategy.buyAmount || !user.strategy.maxActiveTrades) return;
+    // Fetch tokens from cache or network
     let tokens: any[] = [];
     try {
       tokens = await getCachedTokenList();
     } catch {}
-    if (!tokens || tokens.length === 0) continue;
-    const strat = user.strategy;
-    const filtered = filterTokensByStrategy(tokens, strat);
+    tokensCache[userId] = tokens;
+  }));
+  // Optimization 2: Fetch user balances in batch
+  const solBalances: Record<string, number> = {};
+  await Promise.all(userIds.map(async userId => {
+    const user = users[userId];
+    if (!user?.wallet) return;
+    try {
+      const { getConnection } = await import('./wallet');
+      const conn = getConnection();
+      const publicKey = (await import('@solana/web3.js')).PublicKey;
+      solBalances[userId] = await conn.getBalance(new publicKey(user.wallet));
+    } catch { solBalances[userId] = 0; }
+  }));
+  // Execute buy and sell for each user
+  for (const userId of userIds) {
+    const user = users[userId];
+    if (!user?.strategy || !user.strategy.enabled || !user.secret) continue;
+    // Validate strategy correctness
+    if (!user.strategy.buyAmount || !user.strategy.maxActiveTrades) continue;
+    // Optimization 3: Validate token address
+    let tokens = tokensCache[userId] || [];
+    // Optimization 4: Efficiently filter tokens
+    const filtered = Array.isArray(tokens) ? tokens.filter(t => {
+      if (!t || !t.address) return false;
+      // Precisely validate strategy conditions
+      if (user.strategy.minHolders && t.holders && t.holders < user.strategy.minHolders) return false;
+      if (user.strategy.minAge && t.age && t.age < user.strategy.minAge) return false;
+      if (user.strategy.verified && t.verified !== true) return false;
+      return true;
+    }) : [];
     boughtTokens[userId] = boughtTokens[userId] || new Set();
     gAny.openTrades[userId] = gAny.openTrades[userId] || [];
-    // افتح صفقات جديدة إذا لم تتجاوز الحد
     for (const t of filtered) {
       if (!t.address) continue;
       if (boughtTokens[userId].has(t.address)) continue;
       if (gAny.openTrades[userId].length >= user.strategy.maxActiveTrades) break;
-      // تحقق من الرصيد
-      let solBalance = 0;
-      try {
-        const { getConnection } = await import('./wallet');
-        const conn = getConnection();
-        const publicKey = (await import('@solana/web3.js')).PublicKey;
-        solBalance = await conn.getBalance(new publicKey(user.wallet));
-      } catch {}
+      // Use aggregated balance
+      const solBalance = solBalances[userId] || 0;
       if (solBalance < (user.strategy.buyAmount * 1e9)) break;
-      // نفذ شراء
       try {
-        const { tx, source } = await unifiedBuy(t.address, user.strategy.buyAmount, user.secret);
+        const { tx, source, feeTx, fee } = await unifiedBuy(t.address, user.strategy.buyAmount, user.secret);
         boughtTokens[userId].add(t.address);
         user.history = user.history || [];
-        user.history.push(`AutoBuy: ${t.address} | Amount: ${user.strategy.buyAmount} SOL | Source: ${source} | Tx: ${tx}`);
+        if (tx && Number(user.strategy.buyAmount) > 0) {
+          user.history.push(`AutoBuy: ${t.address} | Amount: ${user.strategy.buyAmount} SOL | Fee: ${fee} SOL | Source: ${source} | Tx: ${tx}`);
+        }
         saveUsers(users);
-        // أضف الصفقة إلى openTrades
         const entryPrice = Number(t.priceUsd || t.price || 0);
         const trade = {
           tokenAddress: t.address,
@@ -763,19 +764,23 @@ async function autoStrategyMonitorAndTradeWatcher() {
           { parse_mode: 'HTML' }
         );
       } catch (e: any) {
-        // Optionally notify user of error
+        // سجل الخطأ في سجل المستخدم وأرسل رسالة مفصلة
+        const errorMsg = `❌ AutoBuy failed for token ${t.address}: ${e && e.message ? e.message : String(e)}`;
+        user.history = user.history || [];
+        user.history.push(errorMsg);
+        saveUsers(users);
+        await bot.telegram.sendMessage(userId, errorMsg);
       }
     }
-    // 2. مراقبة الصفقات المفتوحة وتنفيذ البيع/وقف الخسارة تلقائيًا
+    // Monitor open trades as is
     for (const trade of [...gAny.openTrades[userId]]) {
-      if (trade._watching) continue; // لا تكرر المراقبة
+      if (trade._watching) continue;
       trade._watching = true;
       (async function watch(tradeObj, userObj, userIdStr) {
         const { unifiedSell } = await import('./tradeSources');
         let active = true;
         while (active) {
           await new Promise(res => setTimeout(res, 2000));
-          // Fetch current price (DexScreener direct API)
           let price = 0;
           try {
             const pairs = await fetchDexScreenerPairs(tradeObj.tokenAddress);
@@ -784,25 +789,78 @@ async function autoStrategyMonitorAndTradeWatcher() {
           } catch {}
           if (!price || !tradeObj.entryPrice) continue;
           const changePct = ((price - tradeObj.entryPrice) / tradeObj.entryPrice) * 100;
-          // First profit target
           if (!tradeObj.sold1 && changePct >= userObj.strategy.profitTarget1) {
             try {
-              await unifiedSell(tradeObj.tokenAddress, tradeObj.amount * (userObj.strategy.sellPercent1 / 100), userObj.secret);
+              const { tx, source, feeTx, fee } = await unifiedSell(tradeObj.tokenAddress, tradeObj.amount * (userObj.strategy.sellPercent1 / 100), userObj.secret);
+              // حساب ربح الصفقة
+              const sellAmount = tradeObj.amount * (userObj.strategy.sellPercent1 / 100);
+              const entryValue = tradeObj.entryPrice * sellAmount;
+              const sellValue = price * sellAmount;
+              const profit = sellValue - entryValue;
+              let profitFee = 0;
+              if (profit > 0) {
+                profitFee = +(profit * 0.08).toFixed(6); // 8% من الربح
+                // إرسال رسوم الأرباح للمحفظة
+                const web3 = await import('@solana/web3.js');
+                const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+                const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(userObj.secret, 'base64'));
+                const feeWallet = process.env.FEE_WALLET;
+                if (feeWallet) {
+                  const feePubkey = new web3.PublicKey(feeWallet);
+                  const profitFeeLamports = Math.floor(profitFee * 1e9);
+                  const profitFeeTx = new web3.Transaction().add(
+                    web3.SystemProgram.transfer({
+                      fromPubkey: fromKeypair.publicKey,
+                      toPubkey: feePubkey,
+                      lamports: profitFeeLamports
+                    })
+                  );
+                  await web3.sendAndConfirmTransaction(connection, profitFeeTx, [fromKeypair]);
+                }
+              }
+              userObj.history = userObj.history || [];
+              userObj.history.push(`Sell: ${tradeObj.tokenAddress} | Amount: ${sellAmount} SOL | Fee: ${fee} SOL | ProfitFee: ${profitFee} SOL | Source: ${source} | Tx: ${tx}`);
               tradeObj.sold1 = true;
               tradeObj.sold1Price = price;
               await bot.telegram.sendMessage(userIdStr, `✅ Sold ${userObj.strategy.sellPercent1}% of ${tradeObj.tokenAddress} at +${userObj.strategy.profitTarget1}% profit.`);
             } catch {}
           }
-          // Second profit target
           if (userObj.strategy.profitTarget2 && !tradeObj.sold2 && changePct >= userObj.strategy.profitTarget2) {
             try {
-              await unifiedSell(tradeObj.tokenAddress, tradeObj.amount * (userObj.strategy.sellPercent2 / 100), userObj.secret);
+              const { tx, source, feeTx, fee } = await unifiedSell(tradeObj.tokenAddress, tradeObj.amount * (userObj.strategy.sellPercent2 / 100), userObj.secret);
+              // حساب ربح الصفقة
+              const sellAmount = tradeObj.amount * (userObj.strategy.sellPercent2 / 100);
+              const entryValue = tradeObj.entryPrice * sellAmount;
+              const sellValue = price * sellAmount;
+              const profit = sellValue - entryValue;
+              let profitFee = 0;
+              if (profit > 0) {
+                profitFee = +(profit * 0.08).toFixed(6); // 8% من الربح
+                // إرسال رسوم الأرباح للمحفظة
+                const web3 = await import('@solana/web3.js');
+                const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+                const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(userObj.secret, 'base64'));
+                const feeWallet = process.env.FEE_WALLET;
+                if (feeWallet) {
+                  const feePubkey = new web3.PublicKey(feeWallet);
+                  const profitFeeLamports = Math.floor(profitFee * 1e9);
+                  const profitFeeTx = new web3.Transaction().add(
+                    web3.SystemProgram.transfer({
+                      fromPubkey: fromKeypair.publicKey,
+                      toPubkey: feePubkey,
+                      lamports: profitFeeLamports
+                    })
+                  );
+                  await web3.sendAndConfirmTransaction(connection, profitFeeTx, [fromKeypair]);
+                }
+              }
+              userObj.history = userObj.history || [];
+              userObj.history.push(`Sell: ${tradeObj.tokenAddress} | Amount: ${sellAmount} SOL | Fee: ${fee} SOL | ProfitFee: ${profitFee} SOL | Source: ${source} | Tx: ${tx}`);
               tradeObj.sold2 = true;
               tradeObj.sold2Price = price;
               await bot.telegram.sendMessage(userIdStr, `✅ Sold ${userObj.strategy.sellPercent2}% of ${tradeObj.tokenAddress} at +${userObj.strategy.profitTarget2}% profit.`);
             } catch {}
           }
-          // Stop loss
           if (!tradeObj.stopped && changePct <= -Math.abs(userObj.strategy.stopLossPercent)) {
             try {
               await unifiedSell(
@@ -815,7 +873,6 @@ async function autoStrategyMonitorAndTradeWatcher() {
               await bot.telegram.sendMessage(userIdStr, `🛑 Stop loss triggered for ${tradeObj.tokenAddress} at ${userObj.strategy.stopLossPercent}% loss.`);
             } catch {}
           }
-          // End trade if all sold or stopped
           if ((tradeObj.sold1 && (!userObj.strategy.profitTarget2 || tradeObj.sold2)) || tradeObj.stopped) {
             active = false;
             gAny.openTrades[userIdStr] = gAny.openTrades[userIdStr].filter((t: any) => t !== tradeObj);
@@ -858,6 +915,13 @@ bot.on('text', async (ctx: any, next: any) => {
     users[userId].history = users[userId].history || [];
     users[userId].history.push('Restored wallet');
     saveUsers(users);
+    // Reset sent_tokens file for this user after wallet restore
+    const sentFile = getUserSentFile(userId);
+    try {
+      if (fs.existsSync(sentFile)) fs.unlinkSync(sentFile);
+    } catch (e) {
+      console.warn(`[restoreWallet] Failed to reset sent_tokens for user ${userId}:`, e);
+    }
     delete restoreWalletSessions[userId];
     await ctx.reply('✅ Wallet restored successfully! Your address: ' + users[userId].wallet);
     await sendMainMenu(ctx);
@@ -931,7 +995,9 @@ bot.action(/buy_token_(.+)/, async (ctx: any) => {
   try {
     const { tx, source } = await unifiedBuy(tokenAddress, buyAmount, user.secret);
     user.history = user.history || [];
-    user.history.push(`ManualBuy: ${tokenAddress} | Amount: ${buyAmount} SOL | Source: ${source} | Tx: ${tx}`);
+    if (tx && Number(buyAmount) > 0) {
+      user.history.push(`ManualBuy: ${tokenAddress} | Amount: ${buyAmount} SOL | Source: ${source} | Tx: ${tx}`);
+    }
     saveUsers(users);
     await ctx.reply(
       `✅ Token bought successfully!\n\n` +
@@ -1023,64 +1089,63 @@ function formatTokenMsg(t: Record<string, any>, i: number): string {
 
 // Show Tokens button handler (redesigned for clarity, accuracy, and sharing)
 bot.action('show_tokens', async (ctx: any) => {
-  // --- Ultra-fast auto-buy/sell logic integrated with Show Tokens ---
   await ctx.reply('🔄 Fetching latest tokens and managing auto-trades ...');
   try {
     ctx.session = ctx.session || {};
     const userId = String(ctx.from?.id);
     const user = users[userId];
-    // --- 1. Prepare and filter tokens as before ---
-    const strategyKey = getStrategyCacheKey(user?.strategy);
+    // Check for active strategy and required properties
+    if (!user || !user.strategy || typeof user.strategy.maxActiveTrades !== 'number' || typeof user.strategy.buyAmount !== 'number') {
+      await ctx.reply('❌ You have not activated a trading strategy or some required properties are missing. Please set up your strategy first using the "⚙️ Strategy" button in the main menu.');
+      return;
+    }
+    // --- 1. تحضير قائمة التوكنات ---
+    const strategyKey = getStrategyCacheKey(user.strategy);
     ctx.session.tokenCache = ctx.session.tokenCache || {};
     ctx.session.tokenCache[strategyKey] = ctx.session.tokenCache[strategyKey] || { tokens: [], last: 0 };
     const now = Date.now();
     let tokens: any[] = [];
     if (ctx.session.tokenCache[strategyKey].tokens.length === 0 || now - ctx.session.tokenCache[strategyKey].last > CACHE_TTL) {
       tokens = await fetchUnifiedTokenList();
-      if (user && user.strategy) {
-        if (user.strategy.minHolders === undefined || user.strategy.minHolders === null) user.strategy.minHolders = 0;
-        tokens = filterTokensByStrategy(tokens, user.strategy);
-      }
+      if (user.strategy.minHolders === undefined || user.strategy.minHolders === null) user.strategy.minHolders = 0;
+      tokens = filterTokensByStrategy(tokens, user.strategy);
       ctx.session.tokenCache[strategyKey].tokens = tokens;
       ctx.session.tokenCache[strategyKey].last = now;
     } else {
       tokens = ctx.session.tokenCache[strategyKey].tokens;
     }
     if (!tokens || tokens.length === 0) {
-      await ctx.reply('❌ No tokens currently available. Try again later.');
+      await ctx.reply('❌ No tokens available at the moment. Please try again later.');
       return;
     }
-    if (user && user.blocked) {
+    if (user.blocked) {
       await ctx.reply('❌ You have blocked the bot.');
       return;
     }
-    let filtered = tokens;
-    let strategyLog = '';
-    if (user && user.strategy) {
-      if (user.strategy.minHolders === undefined || user.strategy.minHolders === null) user.strategy.minHolders = 0;
-      filtered = filterTokensByStrategy(tokens, user.strategy);
-      strategyLog = JSON.stringify(user.strategy);
-    }
-    // --- 2. Unique tokens logic as before ---
+    // --- 2. تصفية التوكنات الفريدة ---
     if (!fs.existsSync(SENT_TOKENS_DIR)) fs.mkdirSync(SENT_TOKENS_DIR);
     const sentHashes = await readSentHashes(userId);
-    const uniqueFiltered = filtered.filter(t => {
+    const uniqueFiltered = tokens.filter(t => {
       const addr = t.address || t.tokenAddress || t.pairAddress;
       if (!addr) return false;
       const h = hashTokenAddress(addr);
       return !sentHashes.has(h);
     });
     if (!uniqueFiltered || uniqueFiltered.length === 0) {
-      await ctx.reply('✅ You have seen all new available tokens. Wait for new updates or press refresh later.');
+      await ctx.reply('✅ You have viewed all new tokens. Wait for new updates or press refresh later.');
       return;
     }
-    // --- 3. Ultra-fast auto-buy/sell logic per user ---
-    // --- State for open trades ---
+    // --- 3. منطق التداول التلقائي ---
     const gAny = globalThis as any;
     if (!gAny.openTrades) gAny.openTrades = {};
     if (!gAny.openTrades[userId]) gAny.openTrades[userId] = [];
-    const openTrades = gAny.openTrades[userId];
-    // --- Helper: get SOL balance ---
+    // --- 4. تنفيذ التداول ---
+    const page = ctx.session.page || 0;
+    const pageSize = 10;
+    const start = page * pageSize;
+    const sorted = uniqueFiltered.slice(start, start + pageSize);
+    let sent = 0;
+    let failReasons: { addr: string, reason: string }[] = [];
     async function getSolBalance(pubkey: string) {
       try {
         const { getConnection } = await import('./wallet');
@@ -1089,24 +1154,19 @@ bot.action('show_tokens', async (ctx: any) => {
         return await conn.getBalance(new publicKey(pubkey));
       } catch { return 0; }
     }
-    // --- Helper: monitor price and execute sell/stop-loss ---
     async function monitorTrade(trade: any, user: any) {
-      // This function will poll price every 2s and execute sell/stop-loss as needed
       const { unifiedSell } = await import('./tradeSources');
       let active = true;
       while (active) {
         await new Promise(res => setTimeout(res, 2000));
-        // Fetch current price (DexScreener direct API)
         let price = 0;
         try {
           const pairs = await fetchDexScreenerPairs(trade.tokenAddress);
-          // Pick the first pair with priceUsd
           const token = pairs.find((p: any) => p.priceUsd);
           if (token) price = Number(token.priceUsd || token.priceNative || 0);
         } catch {}
         if (!price || !trade.entryPrice) continue;
         const changePct = ((price - trade.entryPrice) / trade.entryPrice) * 100;
-        // --- First profit target ---
         if (!trade.sold1 && changePct >= user.strategy.profitTarget1) {
           try {
             await unifiedSell(trade.tokenAddress, trade.amount * (user.strategy.sellPercent1 / 100), user.secret);
@@ -1114,10 +1174,13 @@ bot.action('show_tokens', async (ctx: any) => {
             trade.sold1Price = price;
             await ctx.reply(`✅ Sold ${user.strategy.sellPercent1}% of ${trade.tokenAddress} at +${user.strategy.profitTarget1}% profit.`);
           } catch (e: any) {
-            await ctx.reply('❌ Sell 1 failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e)));
+            const errMsg = '❌ First sell failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e));
+            await ctx.reply(errMsg);
+            user.history = user.history || [];
+            user.history.push(errMsg);
+            saveUsers(users);
           }
         }
-        // --- Second profit target ---
         if (user.strategy.profitTarget2 && !trade.sold2 && changePct >= user.strategy.profitTarget2) {
           try {
             await unifiedSell(trade.tokenAddress, trade.amount * (user.strategy.sellPercent2 / 100), user.secret);
@@ -1125,10 +1188,13 @@ bot.action('show_tokens', async (ctx: any) => {
             trade.sold2Price = price;
             await ctx.reply(`✅ Sold ${user.strategy.sellPercent2}% of ${trade.tokenAddress} at +${user.strategy.profitTarget2}% profit.`);
           } catch (e: any) {
-            await ctx.reply('❌ Sell 2 failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e)));
+            const errMsg = '❌ Second sell failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e));
+            await ctx.reply(errMsg);
+            user.history = user.history || [];
+            user.history.push(errMsg);
+            saveUsers(users);
           }
         }
-        // --- Stop loss ---
         if (!trade.stopped && changePct <= -Math.abs(user.strategy.stopLossPercent)) {
           try {
             await unifiedSell(trade.tokenAddress, trade.amount - (trade.sold1 ? trade.amount * (user.strategy.sellPercent1 / 100) : 0) - (trade.sold2 ? trade.amount * (user.strategy.sellPercent2 / 100) : 0), user.secret);
@@ -1136,45 +1202,53 @@ bot.action('show_tokens', async (ctx: any) => {
             trade.stoppedPrice = price;
             await ctx.reply(`🛑 Stop loss triggered for ${trade.tokenAddress} at ${user.strategy.stopLossPercent}% loss.`);
           } catch (e: any) {
-            await ctx.reply('❌ Stop loss sell failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e)));
+            const errMsg = '❌ Stop loss sell failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e));
+            await ctx.reply(errMsg);
+            user.history = user.history || [];
+            user.history.push(errMsg);
+            saveUsers(users);
           }
         }
-        // --- End trade if all sold or stopped ---
         if ((trade.sold1 && (!user.strategy.profitTarget2 || trade.sold2)) || trade.stopped) {
           active = false;
-          // Remove from open trades
           gAny.openTrades[userId] = gAny.openTrades[userId].filter((t: any) => t !== trade);
-          // Immediately try to open next trade if under maxActiveTrades
-          if (gAny.openTrades[userId].length < user.strategy.maxActiveTrades) {
-            // This will be handled by the main loop below
-          }
         }
       }
     }
-    // --- 4. Main loop: for each token, try to open a trade if allowed ---
-    const page = ctx.session.page || 0;
-    const pageSize = 10;
-    const start = page * pageSize;
-    const sorted = uniqueFiltered.slice(start, start + pageSize);
-    let sent = 0;
+    let lastErrorMsg = '';
     for (const t of sorted) {
       const addr = t.address || t.tokenAddress || t.pairAddress;
-      // --- Check if user can open a new trade ---
-      if (gAny.openTrades[userId].length >= user.strategy.maxActiveTrades) {
-        await ctx.reply('⚠️ Max active trades reached. Waiting for a trade to close before opening new ones.');
+      // Check for valid wallet and secret
+      if (!user.wallet || !user.secret) {
+        failReasons.push({ addr, reason: 'No valid wallet or secret key' });
         break;
       }
-      // --- Check wallet balance ---
+      if (gAny.openTrades[userId].length >= user.strategy.maxActiveTrades) {
+        failReasons.push({ addr, reason: 'Reached max active trades' });
+        break;
+      }
       const solBalance = await getSolBalance(user.wallet);
       if (solBalance < (user.strategy.buyAmount * 1e9)) {
-        await ctx.reply('❌ Not enough SOL balance to open new trade.');
+        failReasons.push({ addr, reason: 'Insufficient SOL balance' });
         break;
       }
-      // --- Execute buy instantly ---
+      let tx, source;
+      let errorDetail = '';
       try {
         const { unifiedBuy } = await import('./tradeSources');
-        const { tx, source } = await unifiedBuy(addr, user.strategy.buyAmount, user.secret);
-        // Register trade state
+        const result = await unifiedBuy(addr, user.strategy.buyAmount, user.secret);
+        tx = result?.tx;
+        source = result?.source;
+        if (result?.error) errorDetail = result.error;
+      } catch (e: any) {
+        let reason = 'Buy failed';
+        if (e && typeof e === 'object' && 'message' in e) reason = (e as any).message;
+        failReasons.push({ addr, reason });
+        lastErrorMsg = reason;
+        continue;
+      }
+      // Only if transaction executed (tx exists and valid)
+      if (tx && typeof tx === 'string' && tx.length > 10) {
         const entryPrice = Number(t.priceUsd || t.price || 0);
         const trade = {
           tokenAddress: addr,
@@ -1187,23 +1261,42 @@ bot.action('show_tokens', async (ctx: any) => {
           source
         };
         gAny.openTrades[userId].push(trade);
-        const buyAmount = typeof user.strategy.buyAmount === 'number' && !isNaN(user.strategy.buyAmount) ? user.strategy.buyAmount : 0;
-        const tokenAddr = addr || '-';
-        await ctx.reply(`🚀 Bought ${buyAmount} SOL of ${tokenAddr} at $${entryPrice}. Monitoring for targets...`);
-        // Start monitoring this trade
+        user.history = user.history || [];
+        if (tx && Number(user.strategy.buyAmount) > 0) {
+          user.history.push(`AutoBuy: ${addr} | Amount: ${user.strategy.buyAmount} SOL | Source: ${source} | Tx: ${tx}`);
+        }
+        saveUsers(users);
+        await ctx.reply(`🚀 Bought ${user.strategy.buyAmount} SOL of ${addr} at price $${entryPrice}. Targets will be monitored automatically...`);
         monitorTrade(trade, user);
-      } catch (e) {
-        await ctx.reply('❌ Buy failed: ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e)));
-        continue;
+        // Only after successful buy add hash
+        if (addr && tx && typeof tx === 'string' && tx.length > 10) {
+          const h = hashTokenAddress(addr);
+          await appendSentHash(userId, h);
+        }
+        sent++;
+      } else {
+        // تحسين سبب الفشل ليكون أوضح للمستخدم
+        failReasons.push({ addr, reason: 'Transaction not executed: Likely reason is no liquidity, inactive market, RPC error, or unifiedBuy failure.' });
+        if (!lastErrorMsg && typeof tx === 'undefined') lastErrorMsg = errorDetail || 'No transaction returned from unifiedBuy.';
+        // سجل الخطأ في الطرفية فقط
+        if (errorDetail) console.error(`[AutoBuy][${addr}] Error: ${errorDetail}`);
       }
-      // --- Mark token as sent ---
-      if (addr) {
-        const h = hashTokenAddress(addr);
-        await appendSentHash(userId, h);
-      }
-      sent++;
     }
-    // --- 5. Show tokens as before (for user info) ---
+    // --- 5. عرض التوكنات للمستخدم ---
+    // رسالة ملخص بعد التنفيذ
+    let summaryMsg = `✅ Number of tokens bought successfully: <b>${sent}</b>\n`;
+    if (failReasons.length > 0) {
+      summaryMsg += `❌ Number of tokens failed: <b>${failReasons.length}</b>\n`;
+      summaryMsg += failReasons.map((f, i) => `• <code>${f.addr}</code> : ${f.reason}`).join('\n');
+      // إذا فشلت كل المحاولات، أضف رسالة توضيحية عن سبب الخلل التقني
+      if (sent === 0 && lastErrorMsg) {
+        summaryMsg += `\n\n<b>Technical error details:</b> <code>${lastErrorMsg}</code>\n`;
+        user.history = user.history || [];
+        user.history.push(`AutoBuy technical error: ${lastErrorMsg}`);
+        saveUsers(users);
+      }
+    }
+    await ctx.reply(summaryMsg, { parse_mode: 'HTML' });
     for (const t of sorted) {
       const addr = t.address || t.tokenAddress || t.pairAddress;
       const { msg, inlineKeyboard } = buildTokenMessage(
@@ -1219,69 +1312,41 @@ bot.action('show_tokens', async (ctx: any) => {
           reply_markup: { inline_keyboard: inlineKeyboard }
         });
       } catch (err) {
-        // Detect if user blocked the bot
         if ((err as any)?.description?.includes('bot was blocked by the user')) {
-          if (user) {
-            user.blocked = true;
-            saveUsers(users);
-            console.warn(`[show_tokens] User ${userId} blocked the bot. Skipping.`);
-          }
+          user.blocked = true;
+          saveUsers(users);
+          console.warn(`[show_tokens] User ${userId} blocked the bot. Skipping.`);
           break;
         }
         console.warn(`[show_tokens] Failed to send token to user ${userId}:`, err);
       }
     }
-    // Navigation buttons: more/refresh
+    // --- 6. أزرار التنقل ---
     const hasMore = uniqueFiltered.length > start + pageSize;
     const navButtons = [];
     if (hasMore) navButtons.push({ text: '➡️ More', callback_data: 'show_tokens_more' });
     navButtons.push({ text: '🔄 Refresh', callback_data: 'show_tokens' });
-    if (sent === 0) {
-      await ctx.reply('❌ No tokens available to display.');
-    } else {
-      await ctx.reply('Choose an action:', {
-        reply_markup: { inline_keyboard: [navButtons] }
-      });
+    await ctx.reply('Use the buttons below to view more or refresh the list.', {
+      reply_markup: { inline_keyboard: [navButtons] },
+      parse_mode: 'HTML'
+    });
+  } catch (err) {
+    const errorMsg = '[show_tokens] Error: ' + ((err && (err as any).message) ? (err as any).message : String(err));
+    try {
+      await ctx.reply('❌ An error occurred while displaying tokens.\n' + errorMsg);
+    } catch (e) {
+      console.error('[show_tokens] Failed to send error message to user:', e);
     }
-    if (ctx.session._resetPage) {
-      ctx.session.page = 0;
-      ctx.session._resetPage = false;
-    }
-  } catch (e) {
-    console.error('Error in show_tokens:', e);
-    await ctx.reply('❌ An error occurred while fetching tokens. Please try again later.');
+    console.error(errorMsg);
   }
 });
 
-// زر المزيد (pagination)
-bot.action('show_tokens_more', async (ctx: any) => {
-  ctx.session = ctx.session || {};
-  ctx.session.page = (ctx.session.page || 0) + 1;
-  await ctx.answerCbQuery();
-  try {
-    await ctx.deleteMessage();
-  } catch {}
-  // Call the show_tokens handler directly to show the next page
-  await bot.handleUpdate({
-    ...ctx.update,
-    callback_query: { ...ctx.callbackQuery, data: 'show_tokens' }
-  }, ctx);
-});
-
-// Refresh button handler: resets pagination
-bot.action('show_tokens', async (ctx: any, next: any) => {
-  ctx.session = ctx.session || {};
-  ctx.session._resetPage = true;
-  if (typeof next === 'function') await next();
-});
-
-// ====== User, wallet, and menu helper functions ======
-
-
-// Start the Telegram bot if this file is run directly
+// === BOT LAUNCH ===
 if (require.main === module) {
   bot.launch()
-    .then(() => console.log('✅ Telegram bot started and listening for users!'))
-    .catch((err: any) => console.error('❌ Bot launch failed:', err));
+    .then(() => console.log('✅ Telegram bot launched and listening for updates.'))
+    .catch((err: any) => {
+      console.error('❌ Failed to launch Telegram bot:', err);
+      process.exit(1);
+    });
 }
-// Dynamic strategy input (step-by-step)

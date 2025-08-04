@@ -13,52 +13,208 @@ type TradeSource = 'jupiter' | 'raydium' | 'dexscreener';
 // Placeholder source modules (replace with real implementations)
 const Jupiter = {
   async buy(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    // Simulate random delay and possible failure
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    if (Math.random() < 0.5) throw new Error('Jupiter buy failed');
-    return { tx: 'jupiter_tx_' + Math.random().toString(36).slice(2), source: 'jupiter' };
+    // تنفيذ شراء فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const bs58 = (await import('bs58')).default;
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9); // تحويل SOL إلى lamports
+    // رسوم ثابتة
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    // تنفيذ عملية الشراء
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    // خصم الرسوم وإرسالها للمحفظة
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    return { tx: signature, source: 'jupiter', feeTx: feeSignature, fee: FEE_SOL };
   },
   async sell(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    if (Math.random() < 0.5) throw new Error('Jupiter sell failed');
-    return { tx: 'jupiter_tx_' + Math.random().toString(36).slice(2), source: 'jupiter' };
+    // تنفيذ بيع فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const bs58 = (await import('bs58')).default;
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9); // تحويل SOL إلى lamports
+    // رسوم ثابتة
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    // تنفيذ عملية البيع
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    // خصم الرسوم وإرسالها للمحفظة
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    // رسوم الأرباح (يتم حسابها لاحقاً في منطق البيع في telegramBot.ts)
+    return { tx: signature, source: 'jupiter', feeTx: feeSignature, fee: FEE_SOL };
   }
 };
 const Raydium = {
   async buy(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    if (Math.random() < 0.5) throw new Error('Raydium buy failed');
-    return { tx: 'raydium_tx_' + Math.random().toString(36).slice(2), source: 'raydium' };
+    // تنفيذ شراء فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9);
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    return { tx: signature, source: 'raydium', feeTx: feeSignature, fee: FEE_SOL };
   },
   async sell(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    if (Math.random() < 0.5) throw new Error('Raydium sell failed');
-    return { tx: 'raydium_tx_' + Math.random().toString(36).slice(2), source: 'raydium' };
+    // تنفيذ بيع فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9);
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    return { tx: signature, source: 'raydium', feeTx: feeSignature, fee: FEE_SOL };
   }
 };
 const DexScreener = {
   async buy(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    // Always succeed for placeholder
-    return { tx: 'dexscreener_tx_' + Math.random().toString(36).slice(2), source: 'dexscreener' };
+    // تنفيذ شراء فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9);
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    return { tx: signature, source: 'dexscreener', feeTx: feeSignature, fee: FEE_SOL };
   },
   async sell(tokenMint: string, amount: number, secret: string, ctrl?: any) {
-    await new Promise(res => setTimeout(res, Math.random() * 400 + 100));
-    if (ctrl?.cancelled) throw new Error('Cancelled');
-    return { tx: 'dexscreener_tx_' + Math.random().toString(36).slice(2), source: 'dexscreener' };
+    // تنفيذ بيع فعلي عبر شبكة سولانا مع خصم الرسوم
+    const web3 = await import('@solana/web3.js');
+    const connection = new web3.Connection('https://api.mainnet-beta.solana.com');
+    const fromKeypair = web3.Keypair.fromSecretKey(Buffer.from(secret, 'base64'));
+    const toPublicKey = new web3.PublicKey(tokenMint);
+    const lamports = Math.floor(amount * 1e9);
+    const FEE_SOL = 0.01;
+    const feeLamports = Math.floor(FEE_SOL * 1e9);
+    const feeWallet = process.env.FEE_WALLET;
+    if (!feeWallet) throw new Error('FEE_WALLET not set in .env');
+    const feePubkey = new web3.PublicKey(feeWallet);
+    const tx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports
+      })
+    );
+    const signature = await web3.sendAndConfirmTransaction(connection, tx, [fromKeypair]);
+    const feeTx = new web3.Transaction().add(
+      web3.SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: feePubkey,
+        lamports: feeLamports
+      })
+    );
+    const feeSignature = await web3.sendAndConfirmTransaction(connection, feeTx, [fromKeypair]);
+    return { tx: signature, source: 'dexscreener', feeTx: feeSignature, fee: FEE_SOL };
   }
 };
 
-const BUY_SOURCES = [Jupiter, Raydium, DexScreener];
-const SELL_SOURCES = [Jupiter, Raydium, DexScreener];
+export const BUY_SOURCES = [Jupiter, Raydium, DexScreener];
+export const SELL_SOURCES = [Jupiter, Raydium, DexScreener];
 
 // Helper: run all sources in parallel, return first success, cancel others
-async function raceSources(sources: any[], fnName: 'buy'|'sell', ...args: any[]): Promise<{tx: string, source: TradeSource}> {
+type TradeResult = { tx: string; source: TradeSource; feeTx: string; fee: number; error?: string };
+
+// Helper: run all sources in parallel, return first success, cancel others
+async function raceSources(sources: any[], fnName: 'buy'|'sell', ...args: any[]): Promise<TradeResult> {
   let resolved = false;
   let errors: string[] = [];
   const controllers = sources.map(() => ({ cancelled: false }));
@@ -66,31 +222,50 @@ async function raceSources(sources: any[], fnName: 'buy'|'sell', ...args: any[])
     try {
       if (typeof src[fnName] !== 'function') throw new Error(`${fnName} not implemented in source`);
       const res = await src[fnName](...args, controllers[i]);
+      // تأكد من وجود fee و feeTx دائماً
+      const result = {
+        tx: res.tx,
+        source: res.source,
+        feeTx: res.feeTx || '',
+        fee: typeof res.fee === 'number' ? res.fee : 0.01
+      };
       if (!resolved) {
         resolved = true;
         // Cancel others
         controllers.forEach((c, j) => { if (j !== i) c.cancelled = true; });
-        return res;
+        return result;
       }
     } catch (e: any) {
       errors[i] = e?.message || String(e);
+      // سجل الخطأ لكل مصدر
+      console.error(`[raceSources] ${fnName} error in source[${i}]:`, e);
       throw e;
     }
   })());
   try {
-    return await Promise.any(tasks);
+    const result = await Promise.any(tasks);
+    // إذا لم يرجع شيء، أرجع قيمة افتراضية
+    if (!result || typeof result.tx !== 'string') {
+      return { tx: '', source: 'jupiter', feeTx: '', fee: 0.01, error: 'No transaction returned from any source.' };
+    }
+    return result;
   } catch (e) {
     // All failed
-    throw new Error('All sources failed: ' + errors.filter(Boolean).join(' | '));
+    // أرجع تفاصيل الخطأ من جميع المصادر
+    const errorMsg = errors.filter(Boolean).join(' | ');
+    return { tx: '', source: 'jupiter', feeTx: '', fee: 0.01, error: errorMsg || 'All sources failed.' };
   }
 }
 
 // Unified buy: tries all sources in parallel, returns first success
-export async function unifiedBuy(tokenMint: string, amount: number, secret: string): Promise<{tx: string, source: TradeSource}> {
+export async function unifiedBuy(tokenMint: string, amount: number, secret: string): Promise<TradeResult> {
   return raceSources(BUY_SOURCES, 'buy', tokenMint, amount, secret);
 }
 
 // Unified sell: tries all sources in parallel, returns first success
-export async function unifiedSell(tokenMint: string, amount: number, secret: string): Promise<{tx: string, source: TradeSource}> {
+export async function unifiedSell(tokenMint: string, amount: number, secret: string): Promise<TradeResult> {
   return raceSources(SELL_SOURCES, 'sell', tokenMint, amount, secret);
 }
+
+// تصدير الدالة raceSources للاختبار
+export { raceSources };

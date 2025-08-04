@@ -90,17 +90,43 @@ export async function getTokenByAddress(address: string): Promise<MockToken | un
 
 
 export async function simulateBuy(address: string, amount: number): Promise<{ success: boolean; price: number; tx: string }> {
-  const token = await getTokenByAddress(address);
-  if (!token) return { success: false, price: 0, tx: '' };
-  token.volume24h += amount * token.price;
-  return { success: true, price: token.price, tx: randomUUID() };
+  // تنفيذ فعلي عبر unifiedBuy
+  try {
+    const { unifiedBuy } = await import('./tradeSources');
+    // يجب توفير secret من المستخدم (هنا مثال: من env)
+    const secret = process.env.USER_SECRET;
+    if (!secret) throw new Error('USER_SECRET غير معرف في البيئة');
+    const result = await unifiedBuy(address, amount, secret);
+    // result يجب أن يحتوي على tx وسعر فعلي
+    // جلب السعر من التوكن إذا لم يكن موجوداً في النتيجة
+    const token = await getTokenByAddress(address);
+    const price = token?.price ?? 0;
+    return {
+      success: !!result?.tx,
+      price,
+      tx: result?.tx ?? ''
+    };
+  } catch (e: any) {
+    return { success: false, price: 0, tx: '' };
+  }
 }
 
 
 export async function simulateSell(address: string, amount: number): Promise<{ success: boolean; price: number; tx: string }> {
-  const token = await getTokenByAddress(address);
-  if (!token) return { success: false, price: 0, tx: '' };
-  token.volume24h -= amount * token.price;
-  if (token.volume24h < 0) token.volume24h = 0;
-  return { success: true, price: token.price, tx: randomUUID() };
+  // تنفيذ فعلي عبر unifiedSell
+  try {
+    const { unifiedSell } = await import('./tradeSources');
+    const secret = process.env.USER_SECRET;
+    if (!secret) throw new Error('USER_SECRET غير معرف في البيئة');
+    const result = await unifiedSell(address, amount, secret);
+    const token = await getTokenByAddress(address);
+    const price = token?.price ?? 0;
+    return {
+      success: !!result?.tx,
+      price,
+      tx: result?.tx ?? ''
+    };
+  } catch (e: any) {
+    return { success: false, price: 0, tx: '' };
+  }
 }

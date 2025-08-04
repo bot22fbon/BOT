@@ -1,9 +1,8 @@
-import { getConnection, loadKeypair } from './wallet';
+import { getConnection, loadKeypair } from '../wallet';
 import { Network, getOrca, OrcaPoolConfig } from '@orca-so/sdk';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { getAssociatedTokenAddress, getTokenAccount } from './utils/tokenUtils';
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { Connection, PublicKey } from '@solana/web3.js';
 import Decimal from 'decimal.js';
-import { PublicKey } from '@solana/web3.js';
 
 export async function sellWithOrca(tokenMint: string, amountIn: number) {
   const connection = getConnection();
@@ -12,7 +11,7 @@ export async function sellWithOrca(tokenMint: string, amountIn: number) {
   const network = process.env.NETWORK === 'devnet' ? Network.DEVNET : Network.MAINNET;
   const orca = getOrca(connection, network);
   const userPublicKey = wallet.publicKey;
-  // اكتشاف الـ pool المناسب تلقائياً (SOL/tokenMint)
+// Automatically detect the correct pool (SOL/tokenMint)
   let pool = null;
   let foundConfig = null;
   for (const [key, value] of Object.entries(OrcaPoolConfig)) {
@@ -35,9 +34,9 @@ export async function sellWithOrca(tokenMint: string, amountIn: number) {
     console.error('🚫 لم يتم العثور على زوج تداول لهذا التوكن على Orca.');
     console.error('🔗 يمكنك إنشاء pool يدوياً عبر الرابط التالي:');
     console.error(orcaUiUrl);
-    throw new Error('يجب إنشاء pool لهذا التوكن على Orca قبل التداول.');
+    throw new Error('You must create a pool for this token on Orca before trading.');
   }
-  const tokenAccountAddress = await getAssociatedTokenAddress(
+  const tokenAccountAddress = getAssociatedTokenAddress(
     pool.getTokenA().mint,
     userPublicKey
   );
@@ -46,16 +45,33 @@ export async function sellWithOrca(tokenMint: string, amountIn: number) {
     tokenAccountAddress
   );
   if (Number(tokenAmount.amount) < amountIn) {
-    throw new Error(`🚫 الرصيد غير كافٍ للبيع. الرصيد الحالي: ${Number(tokenAmount.amount)}`);
+    throw new Error(`Insufficient balance to sell. Current balance: ${Number(tokenAmount.amount)}`);
   }
   const amount = new Decimal(amountIn.toString());
   const slippage = new Decimal(process.env.SLIPPAGE || '0.1');
   try {
     const swapPayload = await pool.swap(wallet, pool.getTokenA(), amount, slippage);
     const tx = await swapPayload.execute();
-    console.log(`✅ بيع التوكن! المعاملة: https://solscan.io/tx/${tx}`);
+    console.log(`✅ Token sold! Transaction: https://solscan.io/tx/${tx}`);
   } catch (err) {
-    console.error('❌ فشل تنفيذ swap:', err);
+    console.error('❌ Swap execution failed:', err);
     throw err;
   }
+}
+
+// Local function to calculate associated token address
+function getAssociatedTokenAddress(mint: PublicKey, owner: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  )[0];
+}
+
+// Local function to fetch associated token account data
+async function getTokenAccount(connection: Connection, tokenAccountAddress: PublicKey) {
+  const accountInfo = await connection.getParsedAccountInfo(tokenAccountAddress);
+  if (!accountInfo.value || !('data' in accountInfo.value)) throw new Error('Token account not found');
+  const data = (accountInfo.value.data as any).parsed?.info;
+  if (!data) throw new Error('No valid data in token account');
+  return { amount: data.tokenAmount?.amount || 0 };
 }
